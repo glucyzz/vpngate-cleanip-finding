@@ -1,44 +1,61 @@
-# VPNGate IP Risk Checker
+# VPNGate MaxMind Enricher
 
-This program checks the risk scores for VPNGate server IPs using the ipdata.co API and adds the risk information to the VPNGate server data.
+This project fetches VPNGate server data and enriches each server IP with local MaxMind GeoLite2 Country, City, and ASN data.
 
 ## Features
 
-- Fetches VPNGate server list
-- Checks each IP against ipdata.co for risk assessment
-- Includes rate limiting to comply with API restrictions
-- Saves results with original data in a new JSON file
+- Fetches the latest VPNGate server list
+- Uses local MaxMind `.mmdb` databases instead of an external IP risk API
+- Adds country, city, location, registered country, continent, subdivision, postal, and ASN information
+- Saves the enriched result to `vpngate_with_risk.json`
+- Includes a GitHub Actions workflow for automatic data updates
 
 ## Setup
 
-1. Install dependencies:
+Install dependencies:
+
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-2. Make sure your `.env` file contains the IPDATA_API_KEY:
+Download the MaxMind databases into `maxmind/`:
+
+```bash
+mkdir -p maxmind
+curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-Country.mmdb" -o maxmind/GeoLite2-Country.mmdb
+curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-City.mmdb" -o maxmind/GeoLite2-City.mmdb
+curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-ASN.mmdb" -o maxmind/GeoLite2-ASN.mmdb
 ```
-IPDATA_API_KEY=your_api_key_here
-```
+
+No `IPDATA_API_KEY` or socks proxy is required.
 
 ## Usage
 
-Simply run:
 ```bash
 python check_vpn_risk.py
 ```
 
 The program will:
+
 1. Fetch the latest VPNGate server list
-2. Check each IP for risk factors
-3. Save the results in `vpngate_with_risk.json`
+2. Look up each server IP in the local MaxMind databases
+3. Save the result to `vpngate_with_risk.json`
 
 ## Output Format
 
-The program adds a `risk_data` field to each server entry with the following information:
-- `is_threat`: Whether the IP is considered a threat
-- `is_proxy`: Whether the IP is a known proxy
-- `is_vpn`: Whether the IP is a known VPN
-- `is_tor`: Whether the IP is a Tor exit node
-- `is_datacenter`: Whether the IP is from a datacenter
-- `risk_score`: Overall risk score (0-100) 
+Each server entry receives a `maxmind` field when lookup data is available. Supported fields include:
+
+- `country`
+- `registered_country`
+- `continent`
+- `city`
+- `subdivision`
+- `location`
+- `postal`
+- `asn`
+
+MaxMind GeoLite2 does not provide VPN/proxy/threat scoring, so fields such as `is_vpn`, `is_proxy`, `is_tor`, `is_datacenter`, `risk_score`, and `threat` are not generated.
+
+## Automated Updates
+
+`.github/workflows/update-vpngate-maxmind.yml` runs daily and can also be started manually. It downloads the three MaxMind databases, runs tests, regenerates `vpngate_with_risk.json`, and commits the data file only when it changes.

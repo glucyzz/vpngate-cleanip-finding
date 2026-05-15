@@ -18,8 +18,8 @@ python3 check_vpn_risk.py
 
 # Git 操作
 echo "执行 Git 操作..."
-git add .
-git commit -m "Auto update VPN risk data: $(date '+%Y-%m-%d %H:%M:%S')"
+git add vpngate_with_risk.json
+git diff --cached --quiet || git commit -m "Auto update VPNGate MaxMind data: $(date '+%Y-%m-%d %H:%M:%S')"
 git push
 
 # 如果使用了虚拟环境，则退出虚拟环境

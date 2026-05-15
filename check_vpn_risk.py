@@ -1,46 +1,42 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import json
-import time
 import logging
-import random
+import os
 import tempfile
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional
 
+import geoip2.database
+from geoip2.errors import AddressNotFoundError, GeoIP2Error
 import requests
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
-from tqdm import tqdm # type: ignore
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# --- 加载环境变量 ---
 load_dotenv()
 
-# --- 配置区（可通过 .env 覆盖） ---
 VPNGATE_API_URL = os.getenv(
     "VPNGATE_API_URL",
-    "https://raw.githubusercontent.com/6Kmfi6HP/Vpngate-Scraper-API/refs/heads/main/json/data.json"
+    "https://raw.githubusercontent.com/6Kmfi6HP/Vpngate-Scraper-API/refs/heads/main/json/data.json",
 )
-IPDATA_API_URL_TEMPLATE = os.getenv("IPDATA_API_URL_TEMPLATE", "https://api.ipdata.co/{ip}")
-IPDATA_API_KEY = "eca677b284b3bac29eb72f5e496aa9047f26543605efe99ff2ce35c9"
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "10"))
+MAXMIND_DB_DIR = os.getenv("MAXMIND_DB_DIR", "maxmind")
+MAXMIND_COUNTRY_DB = os.getenv(
+    "MAXMIND_COUNTRY_DB", os.path.join(MAXMIND_DB_DIR, "GeoLite2-Country.mmdb")
+)
+MAXMIND_CITY_DB = os.getenv(
+    "MAXMIND_CITY_DB", os.path.join(MAXMIND_DB_DIR, "GeoLite2-City.mmdb")
+)
+MAXMIND_ASN_DB = os.getenv(
+    "MAXMIND_ASN_DB", os.path.join(MAXMIND_DB_DIR, "GeoLite2-ASN.mmdb")
+)
 RETRY_TOTAL = int(os.getenv("RETRY_TOTAL", "5"))
 RETRY_BACKOFF_FACTOR = float(os.getenv("RETRY_BACKOFF_FACTOR", "1"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
 OUTPUT_FILE = os.getenv("OUTPUT_FILE", "vpngate_with_risk.json")
 
-# 如果没有设置 API_KEY，立即退出
-if not IPDATA_API_KEY:
-    raise RuntimeError("请在 .env 文件中设置 IPDATA_API_KEY 环境变量")
-
-# 排除字段
-EXCLUDE_FIELDS = {"ip", "count"}
-
-# --- 日志配置 ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -48,90 +44,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- 用户代理列表 ---
-USER_AGENTS = [
-    # Windows Chrome
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    # Windows Firefox
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    # Windows Edge
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
-    # macOS Chrome
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    # macOS Safari
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15',
-    # macOS Firefox
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:123.0) Gecko/20100101 Firefox/123.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0',
-    # Linux Chrome
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    # Linux Firefox
-    'Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0',
-    # Mobile Chrome (Android)
-    'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-    'Mozilla/5.0 (Linux; Android 13; Samsung S23) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-    # Mobile Safari (iOS)
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (iPad; CPU OS 17_3_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1'
-]
-
-# 如果需要代理，请在 .env 配置 PROXIES_JSON，例如:
-PROXIES_JSON='{"http":"socks5h://127.0.0.1:7890","https":"socks5h://127.0.0.1:7890"}'
-PROXIES = json.loads(PROXIES_JSON)
 
 def create_session() -> requests.Session:
-    """创建带重试策略和可选代理的 Session"""
     session = requests.Session()
     retry = Retry(
         total=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF_FACTOR,
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
+        allowed_methods=["HEAD", "GET", "OPTIONS"],
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    if PROXIES:
-        session.proxies.update(PROXIES)
     return session
 
-def check_ip_risk(ip: str, session: requests.Session) -> Tuple[str, Optional[Dict], float]:
-    """
-    调用 ipdata.co 接口获取单个 IP 的风险数据。
-    返回 (ip, 过滤后的数据 or None, 耗时秒数)
-    """
-    start = time.time()
-    headers = {
-        "Referer": "https://ipdata.co/",
-        "Origin": "https://ipdata.co",
-        "User-Agent": random.choice(USER_AGENTS)
-    }
-    try:
-        resp = session.get(
-            IPDATA_API_URL_TEMPLATE.format(ip=ip),
-            params={"api-key": IPDATA_API_KEY},
-            headers=headers,
-            timeout=REQUEST_TIMEOUT
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        filtered = {k: v for k, v in data.items() if k not in EXCLUDE_FIELDS}
-        return ip, filtered, time.time() - start
-    except Exception as e:
-        logger.warning(f"IP {ip} 请求失败: {e}")
-        return ip, None, time.time() - start
 
-def fetch_vpngate_data() -> Dict:
-    """从 VPNGate 仓库拉取 JSON 并校验格式"""
+def fetch_vpngate_data() -> Dict[str, Any]:
     logger.info("Fetching VPNGate data...")
     session = create_session()
     try:
@@ -144,58 +72,179 @@ def fetch_vpngate_data() -> Dict:
     finally:
         session.close()
 
-def save_atomic(data: Dict, path: str) -> None:
-    """原子性地将 data 写入 path"""
+
+def names_record(record: Any) -> Dict[str, Any]:
+    return compact_dict(
+        {
+            "iso_code": getattr(record, "iso_code", None),
+            "name": getattr(record, "name", None),
+            "names": getattr(record, "names", None) or None,
+            "is_in_european_union": getattr(record, "is_in_european_union", None),
+        }
+    )
+
+
+def continent_record(record: Any) -> Dict[str, Any]:
+    return compact_dict(
+        {
+            "code": getattr(record, "code", None),
+            "name": getattr(record, "name", None),
+            "names": getattr(record, "names", None) or None,
+        }
+    )
+
+
+def city_record(record: Any) -> Dict[str, Any]:
+    return compact_dict(
+        {
+            "name": getattr(record, "name", None),
+            "names": getattr(record, "names", None) or None,
+            "geoname_id": getattr(record, "geoname_id", None),
+        }
+    )
+
+
+def subdivision_record(record: Any) -> Dict[str, Any]:
+    return compact_dict(
+        {
+            "iso_code": getattr(record, "iso_code", None),
+            "name": getattr(record, "name", None),
+            "names": getattr(record, "names", None) or None,
+            "geoname_id": getattr(record, "geoname_id", None),
+        }
+    )
+
+
+def compact_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in data.items() if value is not None}
+
+
+def lookup(reader: Any, method: str, ip: str) -> Optional[Any]:
+    try:
+        return getattr(reader, method)(ip)
+    except AddressNotFoundError:
+        return None
+
+
+def build_maxmind_record(ip: str, city_reader: Any, country_reader: Any, asn_reader: Any) -> Dict[str, Any]:
+    country_response = lookup(country_reader, "country", ip)
+    city_response = lookup(city_reader, "city", ip)
+    asn_response = lookup(asn_reader, "asn", ip)
+
+    response = city_response or country_response
+    record: Dict[str, Any] = {}
+
+    if response:
+        country = names_record(getattr(response, "country", None))
+        registered_country = names_record(getattr(response, "registered_country", None))
+        continent = continent_record(getattr(response, "continent", None))
+        city = city_record(getattr(response, "city", None))
+        subdivision = subdivision_record(
+            getattr(getattr(response, "subdivisions", None), "most_specific", None)
+        )
+        location_obj = getattr(response, "location", None)
+        location = compact_dict(
+            {
+                "latitude": getattr(location_obj, "latitude", None),
+                "longitude": getattr(location_obj, "longitude", None),
+                "accuracy_radius": getattr(location_obj, "accuracy_radius", None),
+                "time_zone": getattr(location_obj, "time_zone", None),
+            }
+        )
+        postal = compact_dict({"code": getattr(getattr(response, "postal", None), "code", None)})
+
+        if country:
+            record["country"] = country
+        if registered_country:
+            record["registered_country"] = registered_country
+        if continent:
+            record["continent"] = continent
+        if city:
+            record["city"] = city
+        if subdivision:
+            record["subdivision"] = subdivision
+        if location:
+            record["location"] = location
+        if postal:
+            record["postal"] = postal
+
+    if asn_response:
+        asn = compact_dict(
+            {
+                "number": getattr(asn_response, "autonomous_system_number", None),
+                "organization": getattr(asn_response, "autonomous_system_organization", None),
+                "network": str(getattr(asn_response, "network", "")) or None,
+            }
+        )
+        if asn:
+            record["asn"] = asn
+
+    return record
+
+
+def annotate_servers_with_maxmind(
+    servers: Iterable[Dict[str, Any]], city_reader: Any, country_reader: Any, asn_reader: Any
+) -> Dict[str, int]:
+    stats = {"annotated": 0, "failed": 0, "skipped": 0}
+    for server in servers:
+        server.pop("ipdata", None)
+        server.pop("maxmind", None)
+        ip = server.get("ip")
+        if not ip:
+            stats["skipped"] += 1
+            continue
+        try:
+            record = build_maxmind_record(ip, city_reader, country_reader, asn_reader)
+        except (GeoIP2Error, ValueError) as exc:
+            logger.warning("IP %s 查询失败: %s", ip, exc)
+            stats["failed"] += 1
+            continue
+        if record:
+            server["maxmind"] = record
+            stats["annotated"] += 1
+        else:
+            stats["failed"] += 1
+    return stats
+
+
+
+def save_atomic(data: Dict[str, Any], path: str) -> None:
     dirpath = os.path.dirname(path) or "."
     with tempfile.NamedTemporaryFile("w", delete=False, dir=dirpath, encoding="utf-8") as tmp:
         json.dump(data, tmp, indent=2, ensure_ascii=False)
         tmp_path = tmp.name
     os.replace(tmp_path, path)
-    logger.info(f"Output saved to {path}")
+    logger.info("Output saved to %s", path)
 
-def main():
+
+def main() -> None:
     start_dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    logger.info(f"Script started at {start_dt}")
+    logger.info("Script started at %s", start_dt)
 
     try:
         vpn_data = fetch_vpngate_data()
         servers = vpn_data["data"]["servers"]
-        ips = [srv["ip"] for srv in servers if srv.get("ip")]
-        logger.info(f"Found {len(ips)} IPs; using {MAX_WORKERS} workers")
+        logger.info("Found %d servers", len(servers))
 
-        session = create_session()
-        stats = {"success": 0, "failed": 0, "times": []}
+        with ExitStack() as stack:
+            country_reader = stack.enter_context(geoip2.database.Reader(MAXMIND_COUNTRY_DB))
+            city_reader = stack.enter_context(geoip2.database.Reader(MAXMIND_CITY_DB))
+            asn_reader = stack.enter_context(geoip2.database.Reader(MAXMIND_ASN_DB))
+            stats = annotate_servers_with_maxmind(servers, city_reader, country_reader, asn_reader)
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = {executor.submit(check_ip_risk, ip, session): ip for ip in ips}
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Checking IP"):
-                ip, info, elapsed = future.result()
-                stats["times"].append(elapsed)
-                if info:
-                    stats["success"] += 1
-                    # 将结果写回原数据结构
-                    for srv in servers:
-                        if srv.get("ip") == ip:
-                            srv["ipdata"] = info
-                            break
-                else:
-                    stats["failed"] += 1
-
-        session.close()
-
-        # 汇总日志
-        total = len(ips)
-        total_time = sum(stats["times"]) if stats["times"] else 0
-        avg_time = total_time / total if total else 0
-        logger.info(f"Total requests: {total}, Success: {stats['success']}, Failed: {stats['failed']}")
-        logger.info(f"Avg time: {avg_time:.2f}s, Min: {min(stats['times']):.2f}s, Max: {max(stats['times']):.2f}s")
-
+        logger.info(
+            "MaxMind lookup complete: annotated=%d, failed=%d, skipped=%d",
+            stats["annotated"],
+            stats["failed"],
+            stats["skipped"],
+        )
         save_atomic(vpn_data, OUTPUT_FILE)
-
     except KeyboardInterrupt:
         logger.error("用户中断执行，已停止")
     except Exception as e:
-        logger.exception(f"脚本运行出错: {e}")
+        logger.exception("脚本运行出错: %s", e)
+        raise
+
 
 if __name__ == "__main__":
     main()
