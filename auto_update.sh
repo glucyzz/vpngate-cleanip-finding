@@ -18,7 +18,7 @@ python3 check_vpn_risk.py
 
 # Git 操作
 echo "执行 Git 操作..."
-git add vpngate_with_risk.json
+git add vpngate_with_risk.json mihomo_openvpn.yaml
 git diff --cached --quiet || git commit -m "Auto update VPNGate MaxMind data: $(date '+%Y-%m-%d %H:%M:%S')"
 git push
 

@@ -1,8 +1,14 @@
+import base64
 from types import SimpleNamespace
 
 from geoip2.errors import GeoIP2Error
 
+import check_vpn_risk
 from check_vpn_risk import annotate_servers_with_maxmind, build_maxmind_record
+
+
+def encode_openvpn_config(config):
+    return base64.b64encode(config.encode("utf-8")).decode("ascii")
 
 
 class FakeReader:
@@ -37,6 +43,222 @@ def named_record(**kwargs):
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
+
+
+def test_build_mihomo_openvpn_config_decodes_vpngate_servers():
+    openvpn_config = """client
+dev tun
+proto udp
+remote vpn.example.com 1194
+cipher AES-128-CBC
+auth SHA1
+<ca>
+-----BEGIN CERTIFICATE-----
+ca-data
+-----END CERTIFICATE-----
+</ca>
+<cert>
+-----BEGIN CERTIFICATE-----
+cert-data
+-----END CERTIFICATE-----
+</cert>
+<key>
+-----BEGIN PRIVATE KEY-----
+key-data
+-----END PRIVATE KEY-----
+</key>
+"""
+    data = {
+        "data": {
+            "servers": [
+                {
+                    "hostname": "public-vpn-219",
+                    "countryshort": "JP",
+                    "maxmind": {
+                        "asn": {
+                            "number": 36599,
+                            "organization": "SoftEther Telecommunication Research Institute LLC",
+                        }
+                    },
+                    "openvpn_configdata_base64": encode_openvpn_config(openvpn_config),
+                }
+            ]
+        }
+    }
+
+    config = check_vpn_risk.build_mihomo_openvpn_config(data)
+
+    assert config == {
+        "proxies": [
+            {
+                "name": "JP AS36599 public-vpn-219",
+                "type": "openvpn",
+                "server": "vpn.example.com",
+                "port": 1194,
+                "proto": "udp",
+                "dev": "tun",
+                "cipher": "AES-128-CBC",
+                "auth": "SHA1",
+                "udp": True,
+                "ca": "-----BEGIN CERTIFICATE-----\nca-data\n-----END CERTIFICATE-----",
+                "cert": "-----BEGIN CERTIFICATE-----\ncert-data\n-----END CERTIFICATE-----",
+                "key": "-----BEGIN PRIVATE KEY-----\nkey-data\n-----END PRIVATE KEY-----",
+            }
+        ]
+    }
+
+
+def test_build_mihomo_proxy_name_excludes_asn_organization():
+    name = check_vpn_risk.build_mihomo_proxy_name(
+        {
+            "hostname": "public-vpn-219",
+            "countryshort": "JP",
+            "maxmind": {
+                "asn": {
+                    "number": 36599,
+                    "organization": "SoftEther Telecommunication Research Institute LLC",
+                }
+            },
+        }
+    )
+
+    assert name == "JP AS36599 public-vpn-219"
+    assert "SoftEther" not in name
+
+
+def test_render_mihomo_yaml_writes_proxies_with_block_scalars():
+    config = {
+        "proxies": [
+            {
+                "name": "public-vpn-219",
+                "type": "openvpn",
+                "server": "vpn.example.com",
+                "port": 1194,
+                "proto": "udp",
+                "udp": True,
+                "ca": "-----BEGIN CERTIFICATE-----\nca-data\n-----END CERTIFICATE-----",
+            }
+        ]
+    }
+
+    yaml = check_vpn_risk.render_mihomo_yaml(config)
+
+    assert yaml == """proxies:
+  - name: "public-vpn-219"
+    type: "openvpn"
+    server: "vpn.example.com"
+    port: 1194
+    proto: "udp"
+    udp: true
+    ca: |-
+      -----BEGIN CERTIFICATE-----
+      ca-data
+      -----END CERTIFICATE-----
+"""
+
+
+def test_render_mihomo_yaml_quotes_plain_strings():
+    config = {
+        "proxies": [
+            {
+                "name": "node: one # from vpngate",
+                "type": "openvpn",
+                "server": "vpn:example.com",
+                "port": 1194,
+            }
+        ]
+    }
+
+    yaml = check_vpn_risk.render_mihomo_yaml(config)
+
+    assert yaml == """proxies:
+  - name: "node: one # from vpngate"
+    type: "openvpn"
+    server: "vpn:example.com"
+    port: 1194
+"""
+
+
+def test_decode_openvpn_config_accepts_base64_with_outer_whitespace():
+    encoded = encode_openvpn_config("proto tcp\nremote vpn.example.com 443\n")
+
+    decoded = check_vpn_risk.decode_openvpn_config(f"\r\n{encoded}\r\n")
+
+    assert decoded == "proto tcp\nremote vpn.example.com 443\n"
+
+
+def test_build_mihomo_openvpn_config_skips_invalid_openvpn_data():
+    data = {
+        "data": {
+            "servers": [
+                {"hostname": "bad", "openvpn_configdata_base64": "not base64"},
+                {
+                    "hostname": "missing-remote",
+                    "openvpn_configdata_base64": encode_openvpn_config("proto udp\n"),
+                },
+                {
+                    "hostname": "bad-port",
+                    "openvpn_configdata_base64": encode_openvpn_config(
+                        "proto udp\nremote vpn.example.com not-a-port\n"
+                    ),
+                },
+                {
+                    "hostname": "bad-port-range",
+                    "openvpn_configdata_base64": encode_openvpn_config(
+                        "proto udp\nremote vpn.example.com 70000\n"
+                    ),
+                },
+            ]
+        }
+    }
+
+    config = check_vpn_risk.build_mihomo_openvpn_config(data)
+
+    assert config == {"proxies": []}
+
+
+def test_save_mihomo_openvpn_config_writes_yaml_file(tmp_path):
+    data = {
+        "data": {
+            "servers": [
+                {
+                    "hostname": "public-vpn-219",
+                    "openvpn_configdata_base64": encode_openvpn_config(
+                        "proto tcp\nremote 219.100.37.206 443\n"
+                    ),
+                }
+            ]
+        }
+    }
+    output = tmp_path / "mihomo_openvpn.yaml"
+
+    check_vpn_risk.save_mihomo_openvpn_config(data, str(output))
+
+    assert output.read_text(encoding="utf-8") == """proxies:
+  - name: "public-vpn-219"
+    type: "openvpn"
+    proto: "tcp"
+    udp: false
+    server: "219.100.37.206"
+    port: 443
+"""
+
+
+def test_build_mihomo_openvpn_config_uses_name_hostname_ip_fallback():
+    openvpn_config = encode_openvpn_config("proto tcp\nremote vpn.example.com 443\n")
+    data = {
+        "data": {
+            "servers": [
+                {"name": "custom name", "hostname": "host", "ip": "192.0.2.1", "openvpn_configdata_base64": openvpn_config},
+                {"hostname": "host", "ip": "192.0.2.2", "openvpn_configdata_base64": openvpn_config},
+                {"ip": "192.0.2.3", "openvpn_configdata_base64": openvpn_config},
+            ]
+        }
+    }
+
+    config = check_vpn_risk.build_mihomo_openvpn_config(data)
+
+    assert [proxy["name"] for proxy in config["proxies"]] == ["custom name", "host", "192.0.2.3"]
 
 
 def test_build_maxmind_record_uses_supported_geoip_fields_only():

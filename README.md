@@ -8,6 +8,7 @@ This project fetches VPNGate server data and enriches each server IP with local 
 - Uses local MaxMind `.mmdb` databases instead of an external IP risk API
 - Adds country, city, location, registered country, continent, subdivision, postal, and ASN information
 - Saves the enriched result to `vpngate_with_risk.json`
+- Generates a mihomo OpenVPN proxy file at `mihomo_openvpn.yaml`
 - Includes a GitHub Actions workflow for automatic data updates
 
 ## Setup
@@ -40,6 +41,7 @@ The program will:
 1. Fetch the latest VPNGate server list
 2. Look up each server IP in the local MaxMind databases
 3. Save the result to `vpngate_with_risk.json`
+4. Decode `openvpn_configdata_base64` and save mihomo OpenVPN proxies to `mihomo_openvpn.yaml`
 
 ## Output Format
 
@@ -55,6 +57,8 @@ Each server entry receives a `maxmind` field when lookup data is available. Supp
 - `asn`
 
 MaxMind GeoLite2 does not provide VPN/proxy/threat scoring, so fields such as `is_vpn`, `is_proxy`, `is_tor`, `is_datacenter`, `risk_score`, and `threat` are not generated.
+
+`mihomo_openvpn.yaml` contains a `proxies` list with `type: openvpn`. Each proxy name is built from the country ISO code, ASN number, and VPNGate server `name`, `hostname`, or `ip` field; ASN organization is not included. The generator maps OpenVPN `remote`, `proto`, `dev`, `cipher`, `auth`, `<ca>`, `<cert>`, `<key>`, and `<tls-crypt>` into mihomo fields.
 
 ## Automated Updates
 
