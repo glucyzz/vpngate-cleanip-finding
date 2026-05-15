@@ -27,15 +27,36 @@ jobs:
 
       - name: Download MaxMind databases
         run: |
+          set -euo pipefail
+          maxmind_ref="$(git ls-remote https://github.com/6Kmfi6HP/maxmind.git refs/heads/main | awk '{print $1}')"
+          if ! printf '%s' "$maxmind_ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Unable to resolve 6Kmfi6HP/maxmind main commit" >&2
+            exit 1
+          fi
+          base_url="https://raw.githubusercontent.com/6Kmfi6HP/maxmind/$maxmind_ref"
           mkdir -p maxmind
-          curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-Country.mmdb" -o maxmind/GeoLite2-Country.mmdb
-          curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-City.mmdb" -o maxmind/GeoLite2-City.mmdb
-          curl -fsSL "https://6kmfi6hp.github.io/maxmind/GeoLite2-ASN.mmdb" -o maxmind/GeoLite2-ASN.mmdb
-          sha256sum --check <<'EOF'
-          6ed0f194250158fe8caad1fc0f7cb92e4a4db9a7e540217ebda2251102631879  maxmind/GeoLite2-Country.mmdb
-          756a01c47860acee7b0c6ceed4516b4b920a4813117140879555c1300702f4c2  maxmind/GeoLite2-City.mmdb
-          5c0a968504f450ae11ce1a515e10e79ec2656651a30769f4c18ff3f8aebbf884  maxmind/GeoLite2-ASN.mmdb
-          EOF
+
+          download_database() {
+            edition="$1"
+            curl -fsSL "$base_url/$edition.tar.gz.sha256" -o "maxmind/$edition.tar.gz.sha256"
+            expected_hash="$(awk '{print $1}' "maxmind/$edition.tar.gz.sha256")"
+            expected_archive="$(awk '{print $2}' "maxmind/$edition.tar.gz.sha256")"
+            if ! printf '%s' "$expected_hash" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "Invalid SHA256 metadata for $edition" >&2
+              exit 1
+            fi
+            if [ -z "$expected_archive" ]; then
+              echo "Missing archive filename metadata for $edition" >&2
+              exit 1
+            fi
+            echo "$edition upstream archive: $expected_archive ($expected_hash)"
+            curl -fsSL "$base_url/$edition.mmdb" -o "maxmind/$edition.mmdb"
+            test -s "maxmind/$edition.mmdb"
+          }
+
+          download_database GeoLite2-Country
+          download_database GeoLite2-City
+          download_database GeoLite2-ASN
 
       - name: Run tests
         run: python -m pytest -q
