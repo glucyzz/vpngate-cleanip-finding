@@ -58,7 +58,7 @@ Each server entry receives a `maxmind` field when lookup data is available. Supp
 
 MaxMind GeoLite2 does not provide VPN/proxy/threat scoring, so fields such as `is_vpn`, `is_proxy`, `is_tor`, `is_datacenter`, `risk_score`, and `threat` are not generated.
 
-`mihomo_openvpn.yaml` contains a `proxies` list with `type: openvpn`. Each proxy name is built from the country ISO code, ASN number, and VPNGate server `name`, `hostname`, or `ip` field; ASN organization is not included. The generator maps OpenVPN `remote`, `proto`, `dev`, `cipher`, `auth`, `<ca>`, `<cert>`, `<key>`, and `<tls-crypt>` into mihomo fields.
+`mihomo_openvpn.yaml` contains a `proxies` list with `type: openvpn`. Each proxy name is built from the country ISO code, ASN number, and VPNGate server `name`, `hostname`, or `ip` field; ASN organization is not included. The generator maps OpenVPN `remote`, `proto`, `dev`, `cipher`, `auth`, `<ca>`, `<cert>`, `<key>`, and `<tls-crypt>` into mihomo fields. When an OpenVPN profile has no `<tls-crypt>` block, the generator emits `tls-crypt: ""` because mihomo currently treats the field as required.
 
 ## Automated Updates
 

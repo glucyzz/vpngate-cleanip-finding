@@ -251,6 +251,7 @@ def build_mihomo_openvpn_proxy(server: Dict[str, Any]) -> Optional[Dict[str, Any
         return None
     if "server" not in proxy or "port" not in proxy:
         return None
+    proxy.setdefault("tls-crypt", "")
 
     return {
         "name": build_mihomo_proxy_name(server),

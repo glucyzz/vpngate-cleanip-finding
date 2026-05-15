@@ -103,9 +103,29 @@ key-data
                 "ca": "-----BEGIN CERTIFICATE-----\nca-data\n-----END CERTIFICATE-----",
                 "cert": "-----BEGIN CERTIFICATE-----\ncert-data\n-----END CERTIFICATE-----",
                 "key": "-----BEGIN PRIVATE KEY-----\nkey-data\n-----END PRIVATE KEY-----",
+                "tls-crypt": "",
             }
         ]
     }
+
+
+def test_build_mihomo_openvpn_config_sets_empty_tls_crypt_when_absent():
+    data = {
+        "data": {
+            "servers": [
+                {
+                    "hostname": "public-vpn-219",
+                    "openvpn_configdata_base64": encode_openvpn_config(
+                        "proto tcp\nremote 219.100.37.206 443\n"
+                    ),
+                }
+            ]
+        }
+    }
+
+    config = check_vpn_risk.build_mihomo_openvpn_config(data)
+
+    assert config["proxies"][0]["tls-crypt"] == ""
 
 
 def test_build_mihomo_proxy_name_excludes_asn_organization():
@@ -241,6 +261,7 @@ def test_save_mihomo_openvpn_config_writes_yaml_file(tmp_path):
     udp: false
     server: "219.100.37.206"
     port: 443
+    tls-crypt: ""
 """
 
 
